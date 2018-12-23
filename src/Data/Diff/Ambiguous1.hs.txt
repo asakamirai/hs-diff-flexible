@@ -1,0 +1,328 @@
+{-# Language GeneralizedNewtypeDeriving #-}
+{-# Language ScopedTypeVariables #-}
+
+module Data.Diff.Ambiguous where
+
+import qualified Data.Vector as V
+import           Data.Vector ((!?))
+import qualified Data.List   as L
+import qualified Data.Maybe  as MB
+
+import qualified Debug.Trace as D
+
+------
+
+newtype MPos  = MPos  Int deriving (Show, Eq, Ord, Enum, Num)
+newtype NPos  = NPos  Int deriving (Show, Eq, Ord, Enum, Num)
+newtype MSize = MSize Int deriving (Show, Eq, Ord, Enum, Num)
+newtype NSize = NSize Int deriving (Show, Eq, Ord, Enum, Num)
+newtype MVector a = MVector (V.Vector a) deriving (Show, Eq)
+newtype NVector a = NVector (V.Vector a) deriving (Show, Eq)
+
+newtype Cost  = Cost  Int deriving (Show, Eq, Ord, Enum, Num)
+newtype Index = Index Int deriving (Show, Eq, Ord, Enum, Num)
+
+mindex :: MVector a -> MPos -> Maybe a
+mindex (MVector mv) mpos = mv !? fromEnum mpos
+nindex :: NVector a -> NPos -> Maybe a
+nindex (NVector nv) npos = nv !? fromEnum npos
+mlength :: MVector a -> MSize
+mlength (MVector mv) = MSize $ V.length mv
+nlength :: NVector a -> NSize
+nlength (NVector nv) = NSize $ V.length nv
+
+data CostTable = CostTable (MVector (NVector Cost))
+    deriving (Show, Eq)
+
+getCost :: MPos -> NPos -> CostTable -> Maybe Cost
+getCost mpos npos (CostTable mvector) =
+    mindex mvector mpos >>= flip nindex npos
+
+mkCostTable :: (MPos -> NPos -> Cost) -> (MSize, NSize) -> CostTable
+mkCostTable f (msize, nsize) = CostTable mvector
+  where
+    mvector           = MVector $ V.generate (fromEnum msize) genNVector
+    genNVector midx   = NVector $ V.generate (fromEnum nsize) $ genCost midx
+    genCost midx nidx = f (MPos midx) (NPos nidx)
+
+mkCostTableFromItems :: Eq item => (MVector item, NVector item) -> CostTable
+mkCostTableFromItems (mv, nv) = mkCostTable f (mlength mv, nlength nv)
+  where
+    f mpos npos | mindex mv mpos == nindex nv npos = Cost 0
+                | otherwise                        = Cost 100
+
+------
+
+newtype K     = K     Int deriving (Show, Eq, Ord, Enum, Num)
+newtype P     = P     Int deriving (Show, Eq, Ord, Enum, Num)
+newtype Delta = Delta Int deriving (Show, Eq, Ord, Enum, Num)
+
+nposFromKWithMPos :: K -> MPos -> NPos
+nposFromKWithMPos k mpos = NPos $ fromEnum mpos - fromEnum k
+deltaFromVectors :: MVector a -> NVector a -> Delta
+deltaFromVectors mv nv = Delta $ fromEnum (mlength mv) - fromEnum (nlength nv)
+
+data Diff item =
+      Delete item
+    | Add item
+    | Equal item item
+    | Similar item item Cost
+    deriving (Show, Eq, Ord)
+
+data MakeDiff item = MakeDiff
+    { mkOnlyM     :: item -> Diff item
+    , mkOnlyN     :: item -> Diff item
+    , mkEqualMN   :: item -> item -> Diff item
+    , mkSimilarMN :: item -> item -> Cost -> Diff item
+    }
+
+makeDiffMtoN :: MakeDiff item
+makeDiffMtoN = MakeDiff Delete Add Equal Similar
+
+makeDiffNtoM :: MakeDiff item
+makeDiffNtoM = MakeDiff Add Delete (flip Equal) (flip Similar)
+
+newtype WrappedDiff item = WrappedDiff { unwrap :: (Diff item) }
+
+instance Show (WrappedDiff item) where
+    show (WrappedDiff (Delete  _))     = "<Delete>"
+    show (WrappedDiff (Add     _))     = "<Add>"
+    show (WrappedDiff (Equal   _ _))   = "<Equal>"
+    show (WrappedDiff (Similar _ _ c)) = "<Similar " <> show (fromEnum c) <> ">"
+
+instance Eq (WrappedDiff item) where
+    WrappedDiff (Delete  _)     == WrappedDiff (Delete  _)     = True
+    WrappedDiff (Add     _)     == WrappedDiff (Add     _)     = True
+    WrappedDiff (Equal   _ _)   == WrappedDiff (Equal   _ _)   = True
+    WrappedDiff (Similar _ _ _) == WrappedDiff (Similar _ _ _) = True
+    _                           == _                           = False
+
+instance Ord (WrappedDiff item) where
+    compare (WrappedDiff s1) (WrappedDiff s2) =
+        compare (diffInt s1) (diffInt s2)
+      where
+        diffInt (Equal   _ _)   = 1
+        diffInt (Delete  _)     = 2
+        diffInt (Add     _)     = 3
+        diffInt (Similar _ _ _) = 4
+
+data Status item = Status
+    { sDiffs :: [WrappedDiff item]
+    , sCost  :: Cost
+    , sReach :: MPos
+    } deriving (Show, Eq)
+
+instance Ord (Status item) where
+    compare s1 s2
+        | rReach /= EQ = rReach
+        | rCost  /= EQ = rCost
+        | otherwise    = rDiffs
+      where
+        rReach = sReach s1 `compare` sReach s2
+        rCost  = sCost  s2 `compare` sCost  s1 -- reverse order
+        rDiffs = sDiffs s1 `compare` sDiffs s2
+
+type OverlappedStatus item = [Status item]
+type StatusLine item = V.Vector (OverlappedStatus item)
+
+data StatusField item = StatusField
+    { sfStatusLine :: StatusLine item
+    , sfPrevious   :: Maybe (StatusField item)
+    , sfPhase      :: P
+    } deriving (Show, Eq)
+
+snakeXY ::
+       (MVector item, NVector item)
+    -> MakeDiff item
+    -> CostTable
+    -> Cost
+    -> (MPos, NPos)
+    -> Status item
+    -> [Status item]
+snakeXY (mv, nv) mkDiff table maxCost pos status = go pos status []
+  where
+    go pos status results = case cond pos status of
+        Just (m, n, cost) -> move pos (m, n) cost status results
+        otherwise         -> status : results
+    cond (mpos, npos) status = do
+        m <- mindex mv mpos
+        n <- nindex nv npos
+        cost <- getCost mpos npos table
+        if sCost status + cost < maxCost
+            then Just (m, n, cost)
+            else Nothing
+    {-# INLINE move #-}
+    move (mpos, npos) (m, n) cost status results =
+        go nextPos nextStatus nextResults
+      where
+        nextPos  = (mpos + 1, npos + 1)
+        (nextResults, nextStatus) = case cost of
+            0 -> (results, nextStatusEqual)
+            _ -> (status : results, nextStatusSimilar)
+        nextStatusEqual = status
+            { sDiffs = WrappedDiff (mkEqualMN mkDiff m n) : sDiffs status
+            , sReach = sReach status + 1
+            }
+        nextStatusSimilar = status
+            { sDiffs = WrappedDiff (mkSimilarMN mkDiff m n cost) : sDiffs status
+            , sReach = sReach status + 1
+            , sCost  = sCost  status + cost
+            }
+
+snakeK ::
+       (MVector item, NVector item)
+    -> MakeDiff item
+    -> CostTable
+    -> Cost
+    -> K
+    -> Status item
+    -> [Status item]
+snakeK vectors mkDiff table maxCost k status =
+    D.trace "snakeK status" status `seq`
+    D.trace "snakeK mpos" mpos `seq`
+    D.trace "snakeK npos" npos `seq`
+    D.trace "snakeK maxCost" maxCost `seq`
+    D.trace "snakeK mkDiff" mkDiff `seq`
+    D.trace "snakeK vectors" vectors `seq`
+    snakeXY vectors mkDiff table maxCost (mpos, npos) status
+  where
+    mpos = D.traceShowId $ sReach status
+    npos = D.traceShowId $ nposFromKWithMPos k mpos
+
+solve ::
+     (MVector item, NVector item)
+  -> MakeDiff item
+  -> CostTable
+  -> StatusField item
+  -> Status item
+solve (mv, nv) mkDiff table = go
+  where
+    go field | resultReach /= goalReach = D.trace "go+" $ go $ D.traceShow nextPhase $ nextField
+             | otherwise                = D.trace "go-" $ resultStatus
+      where
+        nextPhase    = sfPhase field + 1
+        nextField    = step (mv, nv) mkDiff delta nextPhase table field
+        nextLine     = sfStatusLine nextField
+        kpidx        = Index $ fromEnum delta + fromEnum nextPhase
+        resultStatus = maximum $ getFromLine nextLine kpidx
+        resultReach  = sReach resultStatus
+    delta = deltaFromVectors mv nv
+    goalReach = toEnum . fromEnum $ mlength mv
+
+step ::
+     (MVector item, NVector item)
+  -> MakeDiff item
+  -> Delta
+  -> P
+  -> CostTable
+  -> StatusField item
+  -> StatusField item
+step (mv, nv) mkDiff delta nextPhase table field = field
+    { sfStatusLine = nextLine
+    , sfPrevious   = Just field
+    , sfPhase      = nextPhase
+    }
+  where
+    startK  :: K = D.traceShowId $ K $ - fromEnum nextPhase
+    finishK :: K = D.traceShowId $ K $ fromEnum nextPhase + fromEnum delta
+    prevLine = sfStatusLine field
+    nextList = V.unfoldr (f nextPhase) (startK, [])
+    f p (k, prevY) = snakeMulti nextStatuses p k
+      where
+        kpidx = Index $ fromEnum k + fromEnum p
+        moveXCurrent  = MB.mapMaybe moveX $ getFromLine nextLine $ kpidx + 1
+        moveYCurrent  = MB.mapMaybe moveY $ getFromLine nextLine $ kpidx - 1
+        moveXPrev     = MB.mapMaybe moveX $ getFromLine prevLine $ kpidx
+        moveYPrev     = MB.mapMaybe moveY $ getFromLine prevLine $ kpidx - 2
+        moveXYSimilar = maxReach          $ getFromLine prevLine $ kpidx - 1
+        nextStatuses = case fromEnum k `compare` fromEnum delta of
+            LT -> moveYCurrent <> moveXYSimilar <> moveXPrev
+            EQ -> moveYCurrent <> moveXYSimilar <> moveXCurrent
+            GT -> moveYPrev    <> moveXYSimilar <> moveXCurrent
+        moveX status = case nindex nv npos of
+            Nothing -> Nothing
+            Just n  -> Just status
+                { sDiffs = WrappedDiff (mkOnlyN mkDiff n) : sDiffs status
+                , sCost  = sCost status + 50
+                }
+          where
+            mpos :: MPos = sReach status
+            npos :: NPos = nposFromKWithMPos k mpos
+        moveY status = case mindex mv $ sReach status of
+            Nothing -> Nothing
+            Just m  -> Just status
+                { sDiffs = WrappedDiff (mkOnlyM mkDiff m) : sDiffs status
+                , sReach = sReach status + 1
+                , sCost  = sCost  status + 50
+                }
+        maxReach :: [Status a] -> [Status a]
+        maxReach [] = []
+        maxReach ss = (: []) $ L.maximumBy (\ a b -> sReach a `compare` sReach b) ss
+    snakeMulti statuses (p :: P) (k :: K)
+        | k <= finishK = Just (nextStatuses, k + 1)
+        | otherwise    = Nothing
+      where
+        nextStatuses = shrinkStatus $ traceIdWith (("after catMapSnake length:" <>) . show . length) $ catMapSnake $ traceIdWith (("after first shrinkStatus length:" <>) . show) $ shrinkStatus $ traceSeq "statuses" $ D.traceShowId statuses
+        catMapSnake  = concat . map mapFunc
+        mapFunc      = snakeK (mv, nv) mkDiff table maxCost k
+        maxCost      = D.traceShowId $ Cost $ fromEnum k * 100 + fromEnum p * 200
+
+getFromLine :: StatusLine a -> Index -> [Status a]
+getFromLine line (Index idx) = case line !? idx of
+    Just statuses -> statuses
+    Nothing       -> []
+
+shrinkStatus :: [Status item] -> [Status item]
+shrinkStatus ss = foldr foldFunc [] . L.groupBy groupFunc . L.sortBy sortFunc $ traceIdWith (("shrinkStatus length:" <>) . show . length) $ traceSeq "!!! shrinkStatus" ss
+  where
+    foldFunc :: [Status item] -> [Status item] -> [Status item]
+    foldFunc ss results = if all (allFunc s) results
+        then s : results
+        else results
+      where
+        s = maximum ss
+        allFunc :: Status item -> Status item -> Bool
+        allFunc s result = sCost result > sCost s
+    groupFunc :: Status item -> Status item -> Bool
+    groupFunc a b = sReach a == sReach b
+    sortFunc :: Status item -> Status item -> Ordering
+    sortFunc  a b = sReach a `compare` sReach b
+
+getDiffV :: (Eq item, Show item) => V.Vector item -> V.Vector item -> [Diff item]
+getDiffV beforev afterv =
+    map unwrap $ sDiffs $ solve vectors mkDiff table init
+  where
+    lenB = V.length beforev
+    lenA = V.length afterv
+    (vectors, mkDiff)
+        | lenB > lenA = ((MVector beforev, NVector afterv), makeDiffMtoN)
+        | otherwise   = ((MVector afterv, NVector beforev), makeDiffNtoM)
+    table = mkCostTableFromItems vectors
+    init = StatusField
+        { sfStatusLine = V.empty
+        , sfPrevious   = Nothing
+        , sfPhase      = -1
+        }
+
+getDiff :: (Eq item, Show item) => [item] -> [item] -> [Diff item]
+getDiff before after = getDiffV (V.fromList before) (V.fromList after)
+
+traceSeq :: String -> a -> a
+traceSeq str a = a `seq` D.trace str a
+
+traceShowSeq :: Show s => s -> a -> a
+traceShowSeq s a = a `seq` D.traceShow s a
+
+traceIdWith :: Show s => (a -> s) -> a -> a
+traceIdWith f a = D.traceShow (f a) a
+
+traceShowWithTag :: Show a => String -> a -> a
+traceShowWithTag str = traceIdWith (((str <> ": ") <>) . show)
+
+{-
+data StatusField item = StatusField
+    { sfStatusLine :: StatusLine item
+    , sfPrevious   :: Maybe (StatusField item)
+    , sfPhase      :: P
+    } deriving (Show, Eq)
+-}

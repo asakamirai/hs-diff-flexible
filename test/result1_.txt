@@ -1,0 +1,16 @@
+[33m-[m[33maaaaaa[m[90;103maXYZ[m[33maa[m
+[36m+[m[36maaaaaa[m[90;106mA12345678901234567890123456890[m[36maa[m
+[m ---------[m
+[33m-[m[33mbbbbbb[m[90;103mbXYZ[m[33mbb[m
+[36m+[m[36mbbbbbb[m[90;106mB12345678901234567890123456890[m[36mbb[m
+[33m-[m[33mcccccc[m[90;103mcXYZ[m[33mcc[m
+[36m+[m[36mcccccc[m[90;106mC12345678901234567890123456890[m[36mcc[m
+[33m-[m[33mdddddd[m[90;103mdXYZ[m[33mdd[m
+[36m+[m[36mdddddd[m[90;106mD12345678901234567890123456890[m[36mdd[m
+[31m-xxxxxxxxx[m
+[33m-[m[33meeeeee[m[90;103meXYZ[m[33mee[m
+[36m+[m[36meeeeee[m[90;106mE12345678901234567890123456890[m[36mee[m
+[31m-aaaaaaAaa[m
+[31m-bbbbbbBbb[m
+[31m-fffffffff[m
+[32m+zzzzzzzzz[m

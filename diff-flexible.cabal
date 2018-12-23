@@ -1,0 +1,79 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.31.0.
+--
+-- see: https://github.com/sol/hpack
+--
+-- hash: 005b35b2e22a2669d2cd44c0a42d4767e59853684be0cad496d219bfe8ff68db
+
+name:           diff-flexible
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/diff-flexible#readme>
+homepage:       https://github.com/githubuser/diff-flexible#readme
+bug-reports:    https://github.com/githubuser/diff-flexible/issues
+author:         Author name here
+maintainer:     example@example.com
+copyright:      2018 Author name here
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    ChangeLog.md
+
+source-repository head
+  type: git
+  location: https://github.com/githubuser/diff-flexible
+
+library
+  exposed-modules:
+      Data.Diff.Flexible
+      Data.Diff.Flexible.Internal
+      Data.Diff.Flexible.Text
+  other-modules:
+      Paths_diff_flexible
+  hs-source-dirs:
+      src
+  build-depends:
+      Diff
+    , ansi-terminal
+    , base >=4.7 && <5
+    , text
+    , text-metrics
+    , vector
+  default-language: Haskell2010
+
+executable fdiff
+  main-is: Main.hs
+  other-modules:
+      Paths_diff_flexible
+  hs-source-dirs:
+      app
+  ghc-options: -O2 -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      Diff
+    , ansi-terminal
+    , base >=4.7 && <5
+    , diff-flexible
+    , text
+    , text-metrics
+    , vector
+  default-language: Haskell2010
+
+test-suite fdiff-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_diff_flexible
+  hs-source-dirs:
+      test
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      Diff
+    , ansi-terminal
+    , base >=4.7 && <5
+    , diff-flexible
+    , text
+    , text-metrics
+    , vector
+  default-language: Haskell2010
